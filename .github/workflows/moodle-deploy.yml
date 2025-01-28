@@ -80,8 +80,8 @@ jobs:
             sudo unzip -o /home/ubuntu/artifact/${DIR}.zip -d /var/www/html/moodle/mod/${DIR}
 
             # Ensure correct permissions and ownership after deployment
-            sudo chown -R www-data:www-data /var/www/html/moodle/mod/${DIR}
-            sudo chmod -R 755 /var/www/html/moodle/mod/${DIR}
+            sudo chown -R www-data:www-data /var/www/html/moodle
+            sudo chmod -R 755 /var/www/html/moodle
 
             # Run the Moodle upgrade script
             sudo -u www-data /usr/bin/php /var/www/html/moodle/admin/cli/upgrade.php --non-interactive
