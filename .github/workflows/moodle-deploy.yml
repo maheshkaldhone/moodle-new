@@ -76,10 +76,14 @@ jobs:
           for DIR in ${{ steps.detect_changes.outputs.changed_dirs }}; do
             echo "Deploying plugin for directory: ${DIR}"
 
-            # Unzip the artifact directly on the server
-            sudo unzip -o /home/ubuntu/artifact/${DIR}.zip -d /var/www/html/moodle/mod/
-            sudo chown -R www-data:www-data /var/www/html/moodle/mod/
-            sudo chmod -R 755 /var/www/html/moodle/mod/
+            # Unzip the artifact directly into the correct subdirectory
+            sudo unzip -o /home/ubuntu/artifact/${DIR}.zip -d /var/www/html/moodle/mod/${DIR}
+
+            # Ensure correct permissions and ownership after deployment
+            sudo chown -R www-data:www-data /var/www/html/moodle/mod/${DIR}
+            sudo chmod -R 755 /var/www/html/moodle/mod/${DIR}
+
+            # Run the Moodle upgrade script
             sudo -u www-data /usr/bin/php /var/www/html/moodle/admin/cli/upgrade.php --non-interactive
 
             echo "Plugin deployed and Moodle upgraded successfully."
