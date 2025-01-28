@@ -41,8 +41,6 @@ jobs:
 
           echo "Changed directories: $CHANGED_DIRS"
           echo "::set-output name=changed_dirs::$CHANGED_DIRS"
-        outputs:
-          changed_dirs: ${{ steps.detect_changes.outputs.changed_dirs }}
 
       # Step 3: Create ZIP Artifacts for changed directories
       - name: Create ZIP Artifacts
