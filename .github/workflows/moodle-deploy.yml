@@ -1,0 +1,76 @@
+name: Moodle Plugin Deployment Workflow
+
+on:
+  workflow_dispatch: # Enables manual trigger
+
+jobs:
+  deploy:
+    name: Deploy Moodle Plugin
+    runs-on: self-hosted
+
+    env:
+      MOODLE_SERVER_PATH: /var/www/html/moodle/mod/ # Moodle plugins directory
+
+    steps:
+      # Step 1: Checkout the repository
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 2  # Fetch at least 2 commits to compare changes
+
+      # Step 2: Detect changed directories under /mod
+      - name: Detect Changed Directories
+        id: detect_changes
+        run: |
+          # Ensure we have the history from at least 2 commits
+          git fetch --depth=2
+          
+          # Get the list of changed directories under 'mod/'
+          CHANGED_DIRS=$(git diff --name-only HEAD~1 HEAD | grep '^mod/' | cut -d '/' -f2 | sort | uniq)
+
+          # Check if any directories were detected
+          if [ -z "$CHANGED_DIRS" ]; then
+            echo "No changed directories detected."
+            exit 1
+          fi
+
+          echo "Changed directories: $CHANGED_DIRS"
+          
+          # Set the environment variable for use in later steps
+          echo "changed_dirs=$CHANGED_DIRS" >> $GITHUB_ENV
+
+      # Step 3: Create ZIP Artifacts for changed directories
+      - name: Create ZIP Artifacts
+        run: |
+          mkdir -p /home/ubuntu/artifact
+          for DIR in ${{ env.changed_dirs }}; do
+            echo "Creating ZIP for directory: $DIR"
+            cd mod/$DIR
+            zip -r /home/ubuntu/artifact/${DIR}.zip ./*
+            cd ../../
+            echo "Created artifact: /home/ubuntu/artifact/${DIR}.zip"
+          done
+
+      # Step 4: Backup Existing Directories on the Moodle server
+      - name: Backup Existing Directories
+        run: |
+          for DIR in ${{ env.changed_dirs }}; do
+            TIMESTAMP=$(date +%Y%m%d%H%M%S)
+            sudo zip -r /tmp/${DIR}_backup_${TIMESTAMP}.zip ${{ env.MOODLE_SERVER_PATH }}${DIR}/
+            echo "Backup created: /tmp/${DIR}_backup_${TIMESTAMP}.zip"
+          done
+
+      # Step 5: Deploy the Plugin ZIPs to Moodle server
+      - name: Deploy Plugin
+        run: |
+          for DIR in ${{ env.changed_dirs }}; do
+            echo "Deploying plugin for directory: ${DIR}"
+
+            # Unzip the artifact directly on the server
+            sudo unzip -o /home/ubuntu/artifact/${DIR}.zip -d /var/www/html/moodle/mod/
+            sudo chown -R www-data:www-data /var/www/html/moodle/mod/
+            sudo chmod -R 755 /var/www/html/moodle/mod/
+            sudo -u www-data /usr/bin/php /var/www/html/moodle/admin/cli/upgrade.php --non-interactive
+
+            echo "Plugin deployed and Moodle upgraded successfully."
+          done
