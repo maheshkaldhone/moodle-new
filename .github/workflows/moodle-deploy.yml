@@ -1,90 +1,151 @@
-name: Moodle Plugin Deployment Workflow
+name: Moodle Plugin Deployment
 
+# Trigger the workflow manually
 on:
-  workflow_dispatch: # Enables manual trigger
+  workflow_dispatch:
+    inputs:
+      plugin-directory:
+        description: 'Enter the name of the plugin directory under mod/ to deploy'
+        required: true
+        type: string
+
+# Environment variables
+env:
+  MOODLE_ROOT: /var/www/html/moodle  # Moodle installation directory on the server
 
 jobs:
-  deploy:
-    name: Deploy Moodle Plugin
-    runs-on: self-hosted
-
-    env:
-      MOODLE_SERVER_PATH: /var/www/html/moodle/mod/ # Moodle plugins directory
+  package-plugin:
+    name: Package Plugin
+    runs-on: ubuntu-latest
+    outputs:
+      zip-file: ${{ steps.zip-plugin.outputs.zip-file }}  # Output the generated zip file name
+      timestamp: ${{ steps.set-timestamp.outputs.timestamp }}  # Output the timestamp for reuse
 
     steps:
-      # Step 1: Checkout the repository
-      - name: Checkout Repository
-        uses: actions/checkout@v3
-        with:
-          fetch-depth: 2  # Fetch at least 2 commits to compare changes
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Fetch the entire repository history
+      run: echo " Repository checked out successfully."
 
-      # Step 2: Detect changed directories under /mod
-      - name: Detect Changed Directories
-        id: detect_changes
-        run: |
-          # Ensure we fetch sufficient history
-          git fetch --depth=10
+    - name: Validate plugin directory
+      id: validate-plugin
+      run: |
+        PLUGIN_PATH="mod/${{ inputs.plugin-directory }}"
+        if [ ! -d "$PLUGIN_PATH" ]; then
+          echo "::error:: Plugin directory '$PLUGIN_PATH' not found in repository!"
+          echo "Available plugins in mod/: $(ls -m mod)"  # List available plugins for reference
+          exit 1
+        else
+          echo " Plugin directory '$PLUGIN_PATH' found in the repository."
+        fi
 
-          # Get the list of changed directories under 'mod/'
-          if git rev-parse HEAD~1 >/dev/null 2>&1; then
-            CHANGED_DIRS=$(git diff --name-only HEAD~1 HEAD | grep '^mod/' | cut -d '/' -f2 | sort | uniq)
-          else
-            echo "Less than 2 commits in history; checking changes in the last commit."
-            CHANGED_DIRS=$(git diff-tree --no-commit-id --name-only -r HEAD | grep '^mod/' | cut -d '/' -f2 | sort | uniq)
-          fi
+    - name: Set timestamp
+      id: set-timestamp
+      run: |
+        TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+        echo "timestamp=$TIMESTAMP" >> $GITHUB_OUTPUT
+        echo " Timestamp generated: $TIMESTAMP"
 
-          # Check if any directories were detected
-          if [ -z "$CHANGED_DIRS" ]; then
-            echo "No changed directories detected."
-            exit 1
-          fi
+    - name: Zip plugin directory
+      id: zip-plugin
+      run: |
+        ZIP_FILE="${{ inputs.plugin-directory }}-${{ steps.set-timestamp.outputs.timestamp }}.zip"
+        echo " Zipping plugin directory: ${{ inputs.plugin-directory }}"
+        cd mod
+        zip -qr "../$ZIP_FILE" "${{ inputs.plugin-directory }}"
+        echo " Plugin directory zipped successfully: $ZIP_FILE"
+        echo "zip-file=$ZIP_FILE" >> $GITHUB_OUTPUT
+        echo "ZIP_FILE=$ZIP_FILE" >> $GITHUB_ENV
 
-          echo "Changed directories: $CHANGED_DIRS"
-          echo "::set-output name=changed_dirs::$CHANGED_DIRS"
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: plugin-package
+        path: ${{ env.ZIP_FILE }}  # Upload the generated zip file as an artifact
+        retention-days: 5  # Keep the artifact for 5 day
+      run: echo " Artifact uploaded successfully: ${{ env.ZIP_FILE }}"
 
-      # Step 3: Create ZIP Artifacts for changed directories
-      - name: Create ZIP Artifacts
-        run: |
-          mkdir -p /home/ubuntu/artifact
-          for DIR in ${{ steps.detect_changes.outputs.changed_dirs }}; do
-            echo "Creating ZIP for directory: $DIR"
-            cd mod/$DIR
-            zip -r /home/ubuntu/artifact/${DIR}.zip ./*
-            cd ../../
-            echo "Created artifact: /home/ubuntu/artifact/${DIR}.zip"
-          done
+  deploy-plugin:
+    name: Deploy to Moodle Server
+    needs: package-plugin  # Depends on the first job
+    runs-on: self-hosted  # Runs on a self-hosted runner (Moodle server)
+ #  environment: production  # Optional: Add environment protection
 
-      # Step 4: Backup Existing Directories
-      - name: Backup Existing Directories
-        run: |
-          for DIR in ${{ steps.detect_changes.outputs.changed_dirs }}; do
-            TIMESTAMP=$(date +%Y%m%d%H%M%S)
-            
-            # Check if the directory exists before backing up
-            if [ -d "${{ env.MOODLE_SERVER_PATH }}${DIR}" ]; then
-              echo "Backing up directory: ${{ env.MOODLE_SERVER_PATH }}${DIR}"
-              sudo zip -r /tmp/${DIR}_backup_${TIMESTAMP}.zip ${{ env.MOODLE_SERVER_PATH }}${DIR}/
-              echo "Backup created: /tmp/${DIR}_backup_${TIMESTAMP}.zip"
-            else
-              echo "Directory does not exist: ${{ env.MOODLE_SERVER_PATH }}${DIR}. Skipping backup."
-            fi
-          done
+    steps:
+    - name: Validate Moodle directory
+      run: |
+        if [ ! -d "${{ env.MOODLE_ROOT }}" ]; then
+          echo "::error:: Moodle installation not found at ${{ env.MOODLE_ROOT }}"
+          exit 1
+        else
+          echo " Moodle installation found at ${{ env.MOODLE_ROOT }}"
+        fi
 
-      # Step 5: Deploy the Plugin ZIPs to Moodle server
-      - name: Deploy Plugin
-        run: |
-          for DIR in ${{ steps.detect_changes.outputs.changed_dirs }}; do
-            echo "Deploying plugin for directory: ${DIR}"
+    - name: Check existing plugin
+      id: plugin-check
+      run: |
+        TARGET_DIR="${{ env.MOODLE_ROOT }}/mod/${{ inputs.plugin-directory }}"
+        if [ -d "$TARGET_DIR" ]; then
+          echo " Existing plugin directory found at $TARGET_DIR"
+          BACKUP_FILE="/tmp/${{ inputs.plugin-directory }}-bkp-${{ needs.package-plugin.outputs.timestamp }}.zip"
+          echo " Backing up existing plugin to $BACKUP_FILE"
+          zip -qr "$BACKUP_FILE" "$TARGET_DIR"  # Backup the existing plugin
+          echo " Backup created successfully: $BACKUP_FILE"
+          echo "exists=true" >> $GITHUB_OUTPUT
+          echo "backup-file=$BACKUP_FILE" >> $GITHUB_OUTPUT
+        else
+          echo " Plugin directory does not exist, proceeding with fresh installation."
+          echo "exists=false" >> $GITHUB_OUTPUT
+        fi
 
-            # Unzip the artifact directly into the correct subdirectory
-            sudo unzip -o /home/ubuntu/artifact/${DIR}.zip -d /var/www/html/moodle/mod/${DIR}
+    - name: Download artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: plugin-package
+        path: artifact  # Download the artifact to the `artifact` directory
+      run: echo " Artifact downloaded successfully to the 'artifact' directory."
 
-            # Ensure correct permissions and ownership after deployment
-            sudo chown -R www-data:www-data /var/www/html/moodle
-            sudo chmod -R 755 /var/www/html/moodle
+    - name: Deploy plugin
+      run: |
+        DEPLOY_DIR="${{ env.MOODLE_ROOT }}/mod"
+        PLUGIN_ZIP="artifact/${{ needs.package-plugin.outputs.zip-file }}"
+        
+        # Validate downloaded artifact
+        if [ ! -f "$PLUGIN_ZIP" ]; then
+          echo "::error:: Plugin package not found: $PLUGIN_ZIP"
+          exit 1
+        else
+          echo " Plugin package found: $PLUGIN_ZIP"
+        fi
 
-            # Run the Moodle upgrade script
-            sudo -u www-data /usr/bin/php /var/www/html/moodle/admin/cli/upgrade.php --non-interactive
+        # Create mod directory if it doesn't exist
+        sudo mkdir -p "$DEPLOY_DIR"
+        echo " Created directory (if not exists): $DEPLOY_DIR"
 
-            echo "Plugin deployed and Moodle upgraded successfully."
-          done
+        # Unzip plugin with permissions preservation
+        echo " Unzipping plugin to $DEPLOY_DIR"
+        sudo unzip -qo "$PLUGIN_ZIP" -d "$DEPLOY_DIR"
+        echo " Plugin unzipped successfully to $DEPLOY_DIR"
+
+        # Set appropriate permissions (adjust as needed for your environment)
+        echo " Setting permissions for $DEPLOY_DIR/${{ inputs.plugin-directory }}"
+        sudo chown -R www-data:www-data "$DEPLOY_DIR/${{ inputs.plugin-directory }}"
+        sudo find "$DEPLOY_DIR/${{ inputs.plugin-directory }}" -type d -exec chmod 755 {} \;
+        sudo find "$DEPLOY_DIR/${{ inputs.plugin-directory }}" -type f -exec chmod 644 {} \;
+        echo " Permissions set successfully."
+
+        # Cleanup
+        echo " Cleaning up artifact directory."
+        rm -rf artifact
+        echo " Cleanup completed."
+
+    - name: Verify deployment
+      run: |
+        DEPLOYED_DIR="${{ env.MOODLE_ROOT }}/mod/${{ inputs.plugin-directory }}"
+        if [ ! -d "$DEPLOYED_DIR" ]; then
+          echo "::error:: Deployment failed - plugin directory not created!"
+          exit 1
+        else
+          echo " Deployment successful! Plugin directory created at $DEPLOYED_DIR"
+        fi
