@@ -75,7 +75,7 @@ jobs:
   deploy-dev:
     name: Deploy to Dev Server
     needs: package-plugin  # Depends on the packaging job
-    runs-on: self-hosted-dev  # Use a self-hosted runner for the dev environment
+    runs-on: moodle-dev # Use a self-hosted runner for the dev environment
     if: ${{ github.event.inputs.environment == 'dev' }}  # Only run if the environment input is 'dev'
 
     steps:
@@ -127,7 +127,7 @@ jobs:
   deploy-prod:
     name: Deploy to Prod Server
     needs: package-plugin  # Depends on the packaging job
-    runs-on: self-hosted-prod  # Use a self-hosted runner for the prod environment
+    runs-on: moddle-server  # Use a self-hosted runner for the prod environment
     if: ${{ github.event.inputs.environment == 'prod' }}  # Only run if the environment input is 'prod'
 
     steps:
