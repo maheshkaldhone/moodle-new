@@ -8,10 +8,18 @@ on:
         description: 'Enter the name of the plugin directory under mod/ to deploy'
         required: true
         type: string
+      environment:
+        description: 'Target environment (dev or prod)'
+        required: true
+        type: choice
+        options:
+          - dev
+          - prod
 
 # Environment variables
 env:
-  MOODLE_ROOT: /var/www/html/moodle  # Moodle installation directory on the server
+  DEV_MOODLE_ROOT: /var/www/html/moodle  # Dev Moodle installation directory
+  PROD_MOODLE_ROOT: /var/www/html/moodle  # Prod Moodle installation directory
 
 jobs:
   package-plugin:
@@ -26,7 +34,7 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 0  # Fetch the entire repository history
-   
+
     - name: Validate plugin directory
       id: validate-plugin
       run: |
@@ -62,40 +70,22 @@ jobs:
       with:
         name: plugin-package
         path: ${{ env.ZIP_FILE }}  # Upload the generated zip file as an artifact
-        retention-days: 5  # Keep the artifact for 5 day
-    
+        retention-days: 5  # Keep the artifact for 5 days
 
-  deploy-plugin:
-    name: Deploy to Moodle Server
-    needs: package-plugin  # Depends on the first job
-    runs-on: self-hosted  # Runs on a self-hosted runner (Moodle server)
- #  environment: production  # Optional: Add environment protection
+  deploy-dev:
+    name: Deploy to Dev Server
+    needs: package-plugin  # Depends on the packaging job
+    runs-on: self-hosted-dev  # Use a self-hosted runner for the dev environment
+    if: ${{ github.event.inputs.environment == 'dev' }}  # Only run if the environment input is 'dev'
 
     steps:
     - name: Validate Moodle directory
       run: |
-        if [ ! -d "${{ env.MOODLE_ROOT }}" ]; then
-          echo "::error:: Moodle installation not found at ${{ env.MOODLE_ROOT }}"
+        if [ ! -d "${{ env.DEV_MOODLE_ROOT }}" ]; then
+          echo "::error:: Dev Moodle installation not found at ${{ env.DEV_MOODLE_ROOT }}"
           exit 1
         else
-          echo " Moodle installation found at ${{ env.MOODLE_ROOT }}"
-        fi
-
-    - name: Check existing plugin
-      id: plugin-check
-      run: |
-        TARGET_DIR="${{ env.MOODLE_ROOT }}/mod/${{ inputs.plugin-directory }}"
-        if [ -d "$TARGET_DIR" ]; then
-          echo " Existing plugin directory found at $TARGET_DIR"
-          BACKUP_FILE="/tmp/${{ inputs.plugin-directory }}-bkp-${{ needs.package-plugin.outputs.timestamp }}.zip"
-          echo " Backing up existing plugin to $BACKUP_FILE"
-          zip -qr "$BACKUP_FILE" "$TARGET_DIR"  # Backup the existing plugin
-          echo " Backup created successfully: $BACKUP_FILE"
-          echo "exists=true" >> $GITHUB_OUTPUT
-          echo "backup-file=$BACKUP_FILE" >> $GITHUB_OUTPUT
-        else
-          echo " Plugin directory does not exist, proceeding with fresh installation."
-          echo "exists=false" >> $GITHUB_OUTPUT
+          echo " Dev Moodle installation found at ${{ env.DEV_MOODLE_ROOT }}"
         fi
 
     - name: Download artifact
@@ -103,13 +93,12 @@ jobs:
       with:
         name: plugin-package
         path: artifact  # Download the artifact to the `artifact` directory
-     
 
-    - name: Deploy plugin
+    - name: Deploy plugin to Dev
       run: |
-        DEPLOY_DIR="${{ env.MOODLE_ROOT }}/mod"
+        DEPLOY_DIR="${{ env.DEV_MOODLE_ROOT }}/mod"
         PLUGIN_ZIP="artifact/${{ needs.package-plugin.outputs.zip-file }}"
-        
+
         # Validate downloaded artifact
         if [ ! -f "$PLUGIN_ZIP" ]; then
           echo "::error:: Plugin package not found: $PLUGIN_ZIP"
@@ -118,16 +107,12 @@ jobs:
           echo " Plugin package found: $PLUGIN_ZIP"
         fi
 
-        # Create mod directory if it doesn't exist
-        sudo mkdir -p "$DEPLOY_DIR"
-        echo " Created directory (if not exists): $DEPLOY_DIR"
-
         # Unzip plugin with permissions preservation
         echo " Unzipping plugin to $DEPLOY_DIR"
         sudo unzip -qo "$PLUGIN_ZIP" -d "$DEPLOY_DIR"
         echo " Plugin unzipped successfully to $DEPLOY_DIR"
 
-        # Set appropriate permissions (adjust as needed for your environment)
+        # Set appropriate permissions
         echo " Setting permissions for $DEPLOY_DIR/${{ inputs.plugin-directory }}"
         sudo chown -R www-data:www-data "$DEPLOY_DIR/${{ inputs.plugin-directory }}"
         sudo find "$DEPLOY_DIR/${{ inputs.plugin-directory }}" -type d -exec chmod 755 {} \;
@@ -139,12 +124,54 @@ jobs:
         rm -rf artifact
         echo " Cleanup completed."
 
-    - name: Verify deployment
+  deploy-prod:
+    name: Deploy to Prod Server
+    needs: package-plugin  # Depends on the packaging job
+    runs-on: self-hosted-prod  # Use a self-hosted runner for the prod environment
+    if: ${{ github.event.inputs.environment == 'prod' }}  # Only run if the environment input is 'prod'
+
+    steps:
+    - name: Validate Moodle directory
       run: |
-        DEPLOYED_DIR="${{ env.MOODLE_ROOT }}/mod/${{ inputs.plugin-directory }}"
-        if [ ! -d "$DEPLOYED_DIR" ]; then
-          echo "::error:: Deployment failed - plugin directory not created!"
+        if [ ! -d "${{ env.PROD_MOODLE_ROOT }}" ]; then
+          echo "::error:: Prod Moodle installation not found at ${{ env.PROD_MOODLE_ROOT }}"
           exit 1
         else
-          echo " Deployment successful! Plugin directory created at $DEPLOYED_DIR"
+          echo " Prod Moodle installation found at ${{ env.PROD_MOODLE_ROOT }}"
         fi
+
+    - name: Download artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: plugin-package
+        path: artifact  # Download the artifact to the `artifact` directory
+
+    - name: Deploy plugin to Prod
+      run: |
+        DEPLOY_DIR="${{ env.PROD_MOODLE_ROOT }}/mod"
+        PLUGIN_ZIP="artifact/${{ needs.package-plugin.outputs.zip-file }}"
+
+        # Validate downloaded artifact
+        if [ ! -f "$PLUGIN_ZIP" ]; then
+          echo "::error:: Plugin package not found: $PLUGIN_ZIP"
+          exit 1
+        else
+          echo " Plugin package found: $PLUGIN_ZIP"
+        fi
+
+        # Unzip plugin with permissions preservation
+        echo " Unzipping plugin to $DEPLOY_DIR"
+        sudo unzip -qo "$PLUGIN_ZIP" -d "$DEPLOY_DIR"
+        echo " Plugin unzipped successfully to $DEPLOY_DIR"
+
+        # Set appropriate permissions
+        echo " Setting permissions for $DEPLOY_DIR/${{ inputs.plugin-directory }}"
+        sudo chown -R www-data:www-data "$DEPLOY_DIR/${{ inputs.plugin-directory }}"
+        sudo find "$DEPLOY_DIR/${{ inputs.plugin-directory }}" -type d -exec chmod 755 {} \;
+        sudo find "$DEPLOY_DIR/${{ inputs.plugin-directory }}" -type f -exec chmod 644 {} \;
+        echo " Permissions set successfully."
+
+        # Cleanup
+        echo " Cleaning up artifact directory."
+        rm -rf artifact
+        echo " Cleanup completed."
