@@ -59,11 +59,11 @@ jobs:
         name: plugin-package
         path: ${{ steps.zip.outputs.zip-file }}
         retention-days: 5
-        
+
   deploy-prod:
     name: Deploy to Production
     needs: package-plugin
-    runs-on: moddle-server
+    runs-on: [self-hosted, Linux, X64, moddle-server]
     if: ${{ github.event.inputs.branch == 'main' }}
     
     steps:
@@ -82,7 +82,7 @@ jobs:
   deploy-dev:
     name: Deploy to Development
     needs: package-plugin
-    runs-on: moodle-dev
+    runs-on: [self-hosted, Linux, X64, moodle-dev]
     if: ${{ github.event.inputs.branch == 'dev' }}
     
     steps:
