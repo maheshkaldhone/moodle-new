@@ -8,47 +8,61 @@ on:
         type: choice
         options: [dev]
         default: 'dev'
-      plugin-directory:
-        description: 'Select plugin from mod/'
-        required: true
-        type: choice
-        options: ${{ fromJson(steps.list-plugins.outputs.plugins) }}
+
 env:
   MOODLE_ROOT: /var/www/html/moodle-dev
+
 jobs:
+  get-plugins:
+    uses: ./.github/workflows/list-plugins.yml
+
   package-plugin:
     name: 📦 Package Plugin
+    needs: get-plugins
     runs-on: ubuntu-latest
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+    - uses: actions/checkout@v4
       with:
         ref: ${{ inputs.branch }}
-    - name: List available plugins
-      id: list-plugins
-      run: |
-        PLUGINS=$(ls -d mod/*/ | cut -d/ -f2 | jq -R -s -c 'split("\n")[:-1]')
-        echo "plugins=$PLUGINS" >> $GITHUB_OUTPUT
+        
+    - name: Select plugin
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const plugins = ${{ needs.get-plugins.outputs.plugin_list }}
+          
+          const { plugin } = await github.rest.actions.getWorkflowInput({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            input_id: 'plugin',
+            options: plugins
+          })
+          
+          core.setOutput('selected_plugin', plugin)
+          
     - name: Create plugin package
       run: |
-        zip -rq ${{ inputs.plugin-directory }}.zip mod/${{ inputs.plugin-directory }}
+        zip -rq ${{ steps.select-plugin.outputs.selected_plugin }}.zip mod/${{ steps.select-plugin.outputs.selected_plugin }}
+        
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
         name: dev-plugin
-        path: ${{ inputs.plugin-directory }}.zip
+        path: ${{ steps.select-plugin.outputs.selected_plugin }}.zip
         retention-days: 1
+
   deploy-dev:
     name: 🖥️ Deploy to Development
-    needs: package-plugin
+    needs: [package-plugin, get-plugins]
     runs-on: [self-hosted, dev]
     steps:
     - name: Download artifact
       uses: actions/download-artifact@v4
       with:
         name: dev-plugin
+        
     - name: Deploy plugin
       run: |
         sudo unzip -qo *.zip -d "${{ env.MOODLE_ROOT }}/mod"
-        sudo chown -R www-data:www-data "${{ env.MOODLE_ROOT }}/mod/${{ inputs.plugin-directory }}"
-        echo "✅ Successfully deployed ${{ inputs.plugin-directory }} to development"
+        sudo chown -R www-data:www-data "${{ env.MOODLE_ROOT }}/mod/${{ steps.select-plugin.outputs.selected_plugin }}"
+        echo "✅ Successfully deployed ${{ steps.select-plugin.outputs.selected_plugin }} to development"
