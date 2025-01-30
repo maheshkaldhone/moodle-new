@@ -16,8 +16,8 @@ on:
         type: string
 
 env:
-  PROD_MOODLE_ROOT: /var/www/html/moodle-prod
-  DEV_MOODLE_ROOT: /var/www/html/moodle-dev
+  PROD_MOODLE_ROOT: /var/www/html/moodle
+  DEV_MOODLE_ROOT: /var/www/html/moodle
 
 jobs:
   package-plugin:
