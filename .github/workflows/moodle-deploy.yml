@@ -16,8 +16,8 @@ on:
         type: string
 
 env:
-  PROD_MOODLE_ROOT: /var/www/html/moodle-prod
-  DEV_MOODLE_ROOT: /var/www/html/moodle-dev
+  PROD_MOODLE_ROOT: /var/www/html/moodle
+  DEV_MOODLE_ROOT: /var/www/html/moodle
 
 jobs:
   package-plugin:
@@ -59,11 +59,11 @@ jobs:
         name: plugin-package
         path: ${{ steps.zip.outputs.zip-file }}
         retention-days: 5
-        
+
   deploy-prod:
     name: Deploy to Production
     needs: package-plugin
-    runs-on: moddle-server
+    runs-on: [self-hosted, Linux, X64, prod]
     if: ${{ github.event.inputs.branch == 'main' }}
     
     steps:
@@ -82,7 +82,7 @@ jobs:
   deploy-dev:
     name: Deploy to Development
     needs: package-plugin
-    runs-on: moodle-dev
+    runs-on: [self-hosted, Linux, X64, dev]
     if: ${{ github.event.inputs.branch == 'dev' }}
     
     steps:
