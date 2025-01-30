@@ -1,72 +1,43 @@
-name: Dynamic Moodle Deployment (Dev)
+name: Manual Moodle Deployment
 
 on:
   workflow_dispatch:
     inputs:
       branch:
-        description: "Select branch (use 'dev' for development)"
+        description: 'Select deployment branch'
         required: true
         type: choice
         options:
-          - dev
           - main
+          - dev
       plugin-directory:
-        description: "Select plugin directory under mod/"
+        description: 'Plugin directory under mod/'
         required: true
-        type: choice
-        # Options will be populated dynamically by the dynamic-inputs action
+        type: string
 
 env:
-  DEV_MOODLE_ROOT: /var/www/html/moodle-dev
+  PROD_MOODLE_ROOT: /var/www/html/moodle
+  DEV_MOODLE_ROOT: /var/www/html/moodle
 
 jobs:
-  generate-inputs:
-    name: Generate Plugin Directory Options
-    runs-on: ubuntu-latest
-    outputs:
-      plugin-directories: ${{ steps.get-dirs.outputs.directories }}
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-      with:
-        ref: ${{ github.event.inputs.branch }}
-
-    - name: List directories under mod/
-      id: get-dirs
-      run: |
-        DIRS=$(ls -d mod/*/ | sed 's/mod\///g; s/\///g' | tr '\n' ',' | sed 's/,$//')
-        echo "directories=$DIRS" >> $GITHUB_OUTPUT
-
   package-plugin:
     name: Package Plugin
-    needs: generate-inputs
     runs-on: ubuntu-latest
     outputs:
       zip-file: ${{ steps.zip.outputs.zip-file }}
       timestamp: ${{ steps.timestamp.outputs.time }}
 
     steps:
-    - name: Dynamic Inputs
-      uses: marocchino/dynamic-inputs@v2
-      with:
-        inputs: |
-          plugin-directory:
-            description: "Select plugin directory under mod/"
-            required: true
-            type: choice
-            options: ${{ needs.generate-inputs.outputs.plugin-directories }}
-
-    - name: Checkout code
+    - name: Checkout selected branch
       uses: actions/checkout@v4
       with:
         ref: ${{ github.event.inputs.branch }}
 
     - name: Validate plugin directory
       run: |
-        PLUGIN_PATH="mod/${{ inputs.plugin-directory }}"
+        PLUGIN_PATH="mod/${{ github.event.inputs.plugin-directory }}"
         if [ ! -d "$PLUGIN_PATH" ]; then
-          echo "::error:: Plugin directory '$PLUGIN_PATH' not found!"
+          echo "::error:: Plugin directory '$PLUGIN_PATH' not found in ${{ github.event.inputs.branch }} branch!"
           exit 1
         fi
 
@@ -74,24 +45,43 @@ jobs:
       id: timestamp
       run: echo "time=$(date +'%Y%m%d-%H%M%S')" >> $GITHUB_OUTPUT
 
-    - name: Create ZIP package
+    - name: Create deployment package
       id: zip
       run: |
-        ZIP_FILE="${{ inputs.plugin-directory }}-${{ steps.timestamp.outputs.time }}.zip"
+        ZIP_FILE="${{ github.event.inputs.plugin-directory }}-${{ steps.timestamp.outputs.time }}.zip"
         cd mod
-        zip -qr "../$ZIP_FILE" "${{ inputs.plugin-directory }}"
+        zip -qr "../$ZIP_FILE" "${{ github.event.inputs.plugin-directory }}"
         echo "zip-file=$ZIP_FILE" >> $GITHUB_OUTPUT
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: dev-plugin-package
+        name: plugin-package
         path: ${{ steps.zip.outputs.zip-file }}
-        retention-days: 3
+        retention-days: 5
+
+  deploy-prod:
+    name: Deploy to Production
+    needs: package-plugin
+    runs-on: [self-hosted, Linux, X64, prod]
+    if: ${{ github.event.inputs.branch == 'main' }}
+    
+    steps:
+    - name: Download artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: plugin-package
+
+    - name: Deploy to Moodle
+      run: |
+        DEPLOY_DIR="${{ env.PROD_MOODLE_ROOT }}/mod"
+        sudo unzip -qo ${{ needs.package-plugin.outputs.zip-file }} -d "$DEPLOY_DIR"
+        sudo chown -R www-data:www-data "$DEPLOY_DIR/${{ github.event.inputs.plugin-directory }}"
+        echo " Deployed ${{ github.event.inputs.plugin-directory }} to Production"
 
   deploy-dev:
     name: Deploy to Development
-    needs: [generate-inputs, package-plugin]
+    needs: package-plugin
     runs-on: [self-hosted, Linux, X64, dev]
     if: ${{ github.event.inputs.branch == 'dev' }}
     
@@ -99,12 +89,11 @@ jobs:
     - name: Download artifact
       uses: actions/download-artifact@v4
       with:
-        name: dev-plugin-package
+        name: plugin-package
 
     - name: Deploy to Moodle
       run: |
         DEPLOY_DIR="${{ env.DEV_MOODLE_ROOT }}/mod"
         sudo unzip -qo ${{ needs.package-plugin.outputs.zip-file }} -d "$DEPLOY_DIR"
-        sudo chown -R www-data:www-data "$DEPLOY_DIR/${{ inputs.plugin-directory }}"
-        sudo -u www-data php ${{ env.DEV_MOODLE_ROOT }}/admin/cli/purge_caches.php
-        echo "✅ Deployed ${{ inputs.plugin-directory }} to Development"
+        sudo chown -R www-data:www-data "$DEPLOY_DIR/${{ github.event.inputs.plugin-directory }}"
+        echo " Deployed ${{ github.event.inputs.plugin-directory }} to Development"
