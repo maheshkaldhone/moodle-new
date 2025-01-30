@@ -63,7 +63,7 @@ jobs:
   deploy-prod:
     name: Deploy to Production
     needs: package-plugin
-    runs-on: [self-hosted, Linux, X64, moddle-server]
+    runs-on: [self-hosted, Linux, X64, prod]
     if: ${{ github.event.inputs.branch == 'main' }}
     
     steps:
@@ -82,7 +82,7 @@ jobs:
   deploy-dev:
     name: Deploy to Development
     needs: package-plugin
-    runs-on: [self-hosted, Linux, X64, moodle-dev]
+    runs-on: [self-hosted, Linux, X64, dev]
     if: ${{ github.event.inputs.branch == 'dev' }}
     
     steps:
