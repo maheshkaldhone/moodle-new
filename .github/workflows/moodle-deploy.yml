@@ -7,6 +7,7 @@ on:
         required: true
         type: choice
         options: [dev]
+        default: 'dev'
       plugin-directory:
         description: 'Select plugin from mod/'
         required: true
