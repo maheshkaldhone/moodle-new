@@ -71,6 +71,20 @@ if ($installremote and $installremoteversion) {
 $installzipcomponent = optional_param('installzipcomponent', null, PARAM_COMPONENT);
 $installzipstorage = optional_param('installzipstorage', null, PARAM_FILE);
 $installzipconfirm = optional_param('installzipconfirm', false, PARAM_BOOL);
+#check for version
+$component = $installer->detect_plugin_component($storage.'/plugin.zip');
+
+$existingPlugin = core_plugin_manager::instance()->get_plugin_info($component);
+if ($existingPlugin) {
+    $currentVersion = $existingPlugin->versiondisk; // Installed plugin version
+    $newVersion = $installer->get_zip_plugin_version($storage.'/plugin.zip'); // Get version from the ZIP
+
+    if ($newVersion <= $currentVersion) {
+        echo $output->notification("Skipping installation: Plugin version ($newVersion) is older or the same as installed version ($currentVersion).", 'error');
+        redirect($PAGE->url); // Redirect back to the plugin install page
+        exit;
+    }
+}
 
 if ($installzipcomponent and $installzipstorage) {
     require_sesskey();
