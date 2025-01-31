@@ -1,99 +1,82 @@
-name: Manual Moodle Deployment
+name: 🧪 Deploy to Development
 
 on:
   workflow_dispatch:
     inputs:
       branch:
-        description: 'Select deployment branch'
+        description: 'Source branch'
+        required: true
+        type: choice
+        options: [dev]
+      plugin-directory:
+        description: 'Select plugin from mod/'
         required: true
         type: choice
         options:
-          - main
-          - dev
-      plugin-directory:
-        description: 'Plugin directory under mod/'
-        required: true
-        type: string
+          # Dynamically populated list of directories under mod/
+          ${{ steps.list-plugins.outputs.plugins }}
 
 env:
-  PROD_MOODLE_ROOT: /var/www/html/moodle
-  DEV_MOODLE_ROOT: /var/www/html/moodle
+  MOODLE_ROOT: /var/www/html/moodle-dev
 
 jobs:
-  package-plugin:
-    name: Package Plugin
+  list-plugins:
+    name:  List Plugins
     runs-on: ubuntu-latest
     outputs:
-      zip-file: ${{ steps.zip.outputs.zip-file }}
-      timestamp: ${{ steps.timestamp.outputs.time }}
-
+      plugins: ${{ steps.list.outputs.plugins }}
     steps:
-    - name: Checkout selected branch
+    - name: Checkout code
       uses: actions/checkout@v4
       with:
-        ref: ${{ github.event.inputs.branch }}
+        ref: ${{ inputs.branch }}
+
+    - name: List directories under mod/
+      id: list
+      run: |
+        PLUGINS=$(ls -d mod/*/ | cut -d/ -f2 | jq -R -s -c 'split("\n")[:-1]')
+        echo "plugins=$PLUGINS" >> $GITHUB_OUTPUT
+
+  package-plugin:
+    name:  Package Plugin
+    needs: list-plugins
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ inputs.branch }}
 
     - name: Validate plugin directory
       run: |
-        PLUGIN_PATH="mod/${{ github.event.inputs.plugin-directory }}"
-        if [ ! -d "$PLUGIN_PATH" ]; then
-          echo "::error:: Plugin directory '$PLUGIN_PATH' not found in ${{ github.event.inputs.branch }} branch!"
+        if [ ! -d "mod/${{ inputs.plugin-directory }}" ]; then
+          echo "::error::Invalid plugin directory! Available options: ${{ needs.list-plugins.outputs.plugins }}"
           exit 1
         fi
 
-    - name: Generate timestamp
-      id: timestamp
-      run: echo "time=$(date +'%Y%m%d-%H%M%S')" >> $GITHUB_OUTPUT
-
-    - name: Create deployment package
-      id: zip
+    - name: Create plugin package
       run: |
-        ZIP_FILE="${{ github.event.inputs.plugin-directory }}-${{ steps.timestamp.outputs.time }}.zip"
-        cd mod
-        zip -qr "../$ZIP_FILE" "${{ github.event.inputs.plugin-directory }}"
-        echo "zip-file=$ZIP_FILE" >> $GITHUB_OUTPUT
+        zip -rq ${{ inputs.plugin-directory }}.zip mod/${{ inputs.plugin-directory }}
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: plugin-package
-        path: ${{ steps.zip.outputs.zip-file }}
-        retention-days: 5
-
-  deploy-prod:
-    name: Deploy to Production
-    needs: package-plugin
-    runs-on: [self-hosted, Linux, X64, prod]
-    if: ${{ github.event.inputs.branch == 'main' }}
-    
-    steps:
-    - name: Download artifact
-      uses: actions/download-artifact@v4
-      with:
-        name: plugin-package
-
-    - name: Deploy to Moodle
-      run: |
-        DEPLOY_DIR="${{ env.PROD_MOODLE_ROOT }}/mod"
-        sudo unzip -qo ${{ needs.package-plugin.outputs.zip-file }} -d "$DEPLOY_DIR"
-        sudo chown -R www-data:www-data "$DEPLOY_DIR/${{ github.event.inputs.plugin-directory }}"
-        echo " Deployed ${{ github.event.inputs.plugin-directory }} to Production"
+        name: dev-plugin
+        path: ${{ inputs.plugin-directory }}.zip
+        retention-days: 1
 
   deploy-dev:
-    name: Deploy to Development
+    name: 🖥️ Deploy to Development
     needs: package-plugin
-    runs-on: [self-hosted, Linux, X64, dev]
-    if: ${{ github.event.inputs.branch == 'dev' }}
-    
+    runs-on: [self-hosted, dev]
     steps:
     - name: Download artifact
       uses: actions/download-artifact@v4
       with:
-        name: plugin-package
+        name: dev-plugin
 
-    - name: Deploy to Moodle
+    - name: Deploy plugin
       run: |
-        DEPLOY_DIR="${{ env.DEV_MOODLE_ROOT }}/mod"
-        sudo unzip -qo ${{ needs.package-plugin.outputs.zip-file }} -d "$DEPLOY_DIR"
-        sudo chown -R www-data:www-data "$DEPLOY_DIR/${{ github.event.inputs.plugin-directory }}"
-        echo " Deployed ${{ github.event.inputs.plugin-directory }} to Development"
+        sudo unzip -qo *.zip -d "${{ env.MOODLE_ROOT }}/mod"
+        sudo chown -R www-data:www-data "${{ env.MOODLE_ROOT }}/mod/${{ inputs.plugin-directory }}"
+        echo " Successfully deployed ${{ inputs.plugin-directory }} to development"
