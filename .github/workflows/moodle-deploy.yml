@@ -9,6 +9,7 @@ on:
         type: choice
         options:
           - main
+          - dev
       plugin-directory:
         description: 'Plugin directory under mod/'
         required: true
@@ -33,11 +34,13 @@ jobs:
 
     - name: Validate plugin directory
       run: |
-        PLUGIN_PATH="mod/${{ github.event.inputs.plugin-directory }}"
-        if [ ! -d "$PLUGIN_PATH" ]; then
-          echo "::error:: Plugin directory '$PLUGIN_PATH' not found in ${{ github.event.inputs.branch }} branch!"
-          exit 1
-        fi
+          PLUGIN_PATH="mod/${{ github.event.inputs.plugin-directory }}"
+          if [ ! -d "$PLUGIN_PATH" ]; then
+            echo "::error:: Plugin directory '$PLUGIN_PATH' not found in ${{ github.event.inputs.branch }} branch!"
+            exit 1
+          else 
+            echo "Plugin directory '$PLUGIN_PATH' found in ${{ github.event.inputs.branch }} branch! Continuing to next step"
+          fi
 
     - name: Generate timestamp
       id: timestamp
@@ -67,6 +70,62 @@ jobs:
       uses: actions/download-artifact@v4
       with:
         name: plugin-package
+
+    - name: Compare version numbers
+      run: |
+          # Use the timestamp from the packaging job to create a unique temporary directory
+          TEMP_ARTIFACT_DIR="/tmp/temp_artifact_${{ needs.package-plugin.outputs.timestamp }}"
+          mkdir "$TEMP_ARTIFACT_DIR"
+          
+          # Unzip the artifact into the unique temporary directory
+          unzip -q ${{ needs.package-plugin.outputs.zip-file }} -d "$TEMP_ARTIFACT_DIR"
+          
+          # Define file paths for the artifact and server version files
+          artifact_file="${TEMP_ARTIFACT_DIR}/${{ github.event.inputs.plugin-directory }}/version.php"
+          server_file="${{ env.PROD_MOODLE_ROOT }}/mod/${{ github.event.inputs.plugin-directory }}/version.php"
+          
+          # Ensure the artifact version file exists
+          if [ ! -f "$artifact_file" ]; then
+            echo "::error:: Artifact version file not found: $artifact_file"
+            exit 1
+          fi
+          
+          # Extract and print artifact version
+          ver_artifact=$(grep '\$plugin->version' "$artifact_file" | awk -F'=' '{print $2}' | tr -d " ;")
+          echo "Artifact version: $ver_artifact"
+          
+          # Check if the server version file exists and extract version, otherwise note first deployment
+          if [ ! -f "$server_file" ]; then
+            echo "Server version file not found, assuming first deployment. Proceeding."
+          else
+            ver_server=$(grep '\$plugin->version' "$server_file" | awk -F'=' '{print $2}' | tr -d " ;")
+            echo "Server version: $ver_server"
+            
+            # Compare the versions numerically
+            if [ "$ver_server" -gt "$ver_artifact" ]; then
+                echo "Server version ($ver_server) is greater than artifact version ($ver_artifact). Deployment aborted."
+                exit 1
+            elif [ "$ver_server" -lt "$ver_artifact" ]; then
+                echo "Artifact version ($ver_artifact) is greater. Proceeding with deployment."
+            else
+                echo "Both versions are the same ($ver_artifact). Proceeding with deployment."
+            fi
+          fi
+
+          #Remove temporary directory
+          rm -rf "$TEMP_ARTIFACT_DIR"
+  
+    - name: Backup current plugin directory
+      run: |
+          TIMESTAMP=$(date +'%Y%m%d-%H%M%S')
+          PLUGIN_DIR="${{ env.PROD_MOODLE_ROOT }}/mod/${{ github.event.inputs.plugin-directory }}"
+          if [ -d "$PLUGIN_DIR" ]; then
+            sudo cp -R "$PLUGIN_DIR" "/tmp/${{ github.event.inputs.plugin-directory }}-backup-${TIMESTAMP}"
+            echo "Backup of plugin directory created at /tmp/${{ github.event.inputs.plugin-directory }}-backup-${TIMESTAMP}"
+          else
+            echo "Plugin directory not found on server, skipping backup."
+          fi
+  
 
     - name: Deploy to Moodle
       run: |
