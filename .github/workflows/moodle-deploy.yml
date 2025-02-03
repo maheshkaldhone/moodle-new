@@ -74,9 +74,9 @@ jobs:
     - name: Compare version numbers
       run: |
           # Use the timestamp from the packaging job to create a unique temporary directory
-          TEMP_ARTIFACT_DIR="temp_artifact_${{ needs.package-plugin.outputs.timestamp }}"
+          TEMP_ARTIFACT_DIR="/tmp/temp_artifact_${{ needs.package-plugin.outputs.timestamp }}"
           # Remove any existing directory with the same name (just in case) and create a fresh one
-          rm -rf "$TEMP_ARTIFACT_DIR"
+          # rm -rf "$TEMP_ARTIFACT_DIR"
           mkdir "$TEMP_ARTIFACT_DIR"
           
           # Unzip the artifact into the unique temporary directory
