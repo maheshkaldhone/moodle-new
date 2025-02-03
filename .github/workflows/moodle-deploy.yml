@@ -33,11 +33,13 @@ jobs:
 
     - name: Validate plugin directory
       run: |
-        PLUGIN_PATH="mod/${{ github.event.inputs.plugin-directory }}"
-        if [ ! -d "$PLUGIN_PATH" ]; then
-          echo "::error:: Plugin directory '$PLUGIN_PATH' not found in ${{ github.event.inputs.branch }} branch!"
-          exit 1
-        fi
+          PLUGIN_PATH="mod/${{ github.event.inputs.plugin-directory }}"
+          if [ ! -d "$PLUGIN_PATH" ]; then
+            echo "::error:: Plugin directory '$PLUGIN_PATH' not found in ${{ github.event.inputs.branch }} branch!"
+            exit 1
+          else 
+            echo "Plugin directory '$PLUGIN_PATH' found in ${{ github.event.inputs.branch }} branch! Continuing to next step"
+          fi
 
     - name: Generate timestamp
       id: timestamp
@@ -67,6 +69,50 @@ jobs:
       uses: actions/download-artifact@v4
       with:
         name: plugin-package
+
+    - name: Compare version numbers
+      run: |
+        # Create a temporary folder for the artifact and extract it
+        mkdir temp_artifact
+        unzip -q ${{ needs.package-plugin.outputs.zip-file }} -d temp_artifact
+
+        # Define file paths for the artifact and server version files
+        artifact_file="temp_artifact/${{ github.event.inputs.plugin-directory }}/version.php"
+        server_file="${{ env.PROD_MOODLE_ROOT }}/mod/${{ github.event.inputs.plugin-directory }}/version.php"
+
+        # Ensure the artifact version file exists
+        if [ ! -f "$artifact_file" ]; then
+          echo "::error:: Artifact version file not found: $artifact_file"
+          exit 1
+        fi
+
+        # Extract artifact version
+        ver_artifact=$(grep '\$plugin->version' "$artifact_file" | awk -F'=' '{print $2}' | tr -d " ;")
+        echo "Artifact version: $ver_artifact"
+
+        # Check if the server version file exists and extract version, otherwise note first deployment
+        if [ ! -f "$server_file" ]; then
+          echo "Server version file not found, assuming first deployment. Proceeding."
+        else
+          ver_server=$(grep '\$plugin->version' "$server_file" | awk -F'=' '{print $2}' | tr -d " ;")
+          echo "Server version: $ver_server"
+
+          # Compare the versions numerically
+          if [ "$ver_server" -gt "$ver_artifact" ]; then
+              echo "Server version ($ver_server) is greater than artifact version ($ver_artifact). Deployment aborted."
+              exit 1
+          elif [ "$ver_server" -lt "$ver_artifact" ]; then
+              echo "Artifact version ($ver_artifact) is greater. Proceeding with deployment."
+          else
+              echo "Both versions are the same ($ver_artifact). Proceeding with deployment."
+          fi
+        fi
+
+    - name: Backup current mod directory
+      run: |
+        TIMESTAMP=$(date +'%Y%m%d-%H%M%S')
+        sudo cp -R "${{ env.PROD_MOODLE_ROOT }}/mod" "/tmp/mod-backup-${TIMESTAMP}"
+        echo "Backup of mod directory created at /tmp/mod-backup-${TIMESTAMP}"
 
     - name: Deploy to Moodle
       run: |
