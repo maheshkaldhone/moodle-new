@@ -108,11 +108,16 @@ jobs:
           fi
         fi
 
-    - name: Backup current mod directory
-      run: |
-        TIMESTAMP=$(date +'%Y%m%d-%H%M%S')
-        sudo cp -R "${{ env.PROD_MOODLE_ROOT }}/mod" "/tmp/mod-backup-${TIMESTAMP}"
-        echo "Backup of mod directory created at /tmp/mod-backup-${TIMESTAMP}"
+        - name: Backup current plugin directory
+        run: |
+          TIMESTAMP=$(date +'%Y%m%d-%H%M%S')
+          PLUGIN_DIR="${{ env.PROD_MOODLE_ROOT }}/mod/${{ github.event.inputs.plugin-directory }}"
+          if [ -d "$PLUGIN_DIR" ]; then
+            sudo cp -R "$PLUGIN_DIR" "/tmp/${{ github.event.inputs.plugin-directory }}-backup-${TIMESTAMP}"
+            echo "Backup of plugin directory created at /tmp/${{ github.event.inputs.plugin-directory }}-backup-${TIMESTAMP}"
+          else
+            echo "Plugin directory not found on server, skipping backup."
+          fi  
 
     - name: Deploy to Moodle
       run: |
