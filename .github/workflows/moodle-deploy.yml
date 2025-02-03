@@ -75,8 +75,6 @@ jobs:
       run: |
           # Use the timestamp from the packaging job to create a unique temporary directory
           TEMP_ARTIFACT_DIR="/tmp/temp_artifact_${{ needs.package-plugin.outputs.timestamp }}"
-          # Remove any existing directory with the same name (just in case) and create a fresh one
-          # rm -rf "$TEMP_ARTIFACT_DIR"
           mkdir "$TEMP_ARTIFACT_DIR"
           
           # Unzip the artifact into the unique temporary directory
@@ -113,6 +111,9 @@ jobs:
                 echo "Both versions are the same ($ver_artifact). Proceeding with deployment."
             fi
           fi
+
+          #Remove temporary directory
+          rm -rf "$TEMP_ARTIFACT_DIR"
   
     - name: Backup current plugin directory
       run: |
