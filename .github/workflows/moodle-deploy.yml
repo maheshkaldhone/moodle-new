@@ -111,7 +111,7 @@ jobs:
           if [ -f "$server_file" ]; then
             ver_server=$(grep '\$plugin->version' "$server_file" | awk -F'=' '{print $2}' | tr -d " ;")
             echo "Server version: $ver_server"
-            
+
             if [ "$ver_server" -gt "$ver_artifact" ]; then
               echo "::error:: Server version ($ver_server) is greater than artifact version ($ver_artifact). Deployment aborted."
               exit 1
@@ -135,9 +135,10 @@ jobs:
             echo "No existing plugin directory found, skipping backup."
           fi
 
-
       - name: Deploy to Moodle
         run: |
           DEPLOY_DIR="${{ env.MOODLE_PATH }}/mod"
           sudo unzip -qo "/tmp/${{ needs.package-plugin.outputs.zip-file }}" -d "$DEPLOY_DIR"
+
           sudo chown -R www-data:www-data "$DEPLOY_DIR/${{ github.event.inputs.plugin-directory }}"
+
