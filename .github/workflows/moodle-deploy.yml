@@ -1,7 +1,6 @@
 # Name of the workflow
-name: Mannual Plugin Deployment
+name: Manual Plugin Deployment
 
-# Trigger the workflow manually with required inputs
 on:
   workflow_dispatch:
     inputs:
@@ -17,12 +16,11 @@ on:
         required: true
         type: string
 
-# Environment variables
 env:
   PROD_MOODLE_ROOT: /var/www/html/moodle
+  DEV_MOODLE_ROOT: /var/www/html/moodle
 
 jobs:
-  # Job to package the plugin
   package-plugin:
     name: Package Plugin
     runs-on: ubuntu-latest
@@ -31,121 +29,115 @@ jobs:
       timestamp: ${{ steps.timestamp.outputs.time }}
 
     steps:
-      # Step 1: Checkout the selected branch
       - name: Checkout selected branch
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.branch }}
 
-      # Step 2: Validate the existence of the plugin directory
       - name: Validate plugin directory
         run: |
           PLUGIN_PATH="mod/${{ github.event.inputs.plugin-directory }}"
           if [ ! -d "$PLUGIN_PATH" ]; then
             echo "::error:: Plugin directory '$PLUGIN_PATH' not found in ${{ github.event.inputs.branch }} branch!"
             exit 1
-          else
-            echo "Plugin directory '$PLUGIN_PATH' found in ${{ github.event.inputs.branch }} branch. Continuing to next step."
           fi
 
-      # Step 3: Generate a timestamp for versioning
       - name: Generate timestamp
         id: timestamp
         run: echo "time=$(date +'%Y%m%d-%H%M%S')" >> $GITHUB_OUTPUT
 
-      # Step 4: Create a deployment package (ZIP file)
       - name: Create deployment package
         id: zip
         run: |
-          ZIP_FILE="${{ github.event.inputs.plugin-directory }}-${{ steps.timestamp.outputs.time }}.zip"
+          ZIP_FILE="${{ github.event.inputs.branch }}-${{ github.event.inputs.plugin-directory }}-${{ steps.timestamp.outputs.time }}.zip"
           cd mod
           zip -qr "../$ZIP_FILE" "${{ github.event.inputs.plugin-directory }}"
           echo "zip-file=$ZIP_FILE" >> $GITHUB_OUTPUT
 
-      # Step 5: Upload the artifact with a retention policy of 5 days
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: plugin-package
+          name: plugin-package-${{ github.event.inputs.branch }}
           path: ${{ steps.zip.outputs.zip-file }}
           retention-days: 5
 
-  # Job to deploy the plugin to the production environment
-  deploy-prod:
-    name: Deploy to Production
+  deploy:
+    name: Deploy to Instance
     needs: package-plugin
-    runs-on: [self-hosted, Linux, X64, prod]
+    runs-on: 
+      - self-hosted
+      - Linux
+      - X64
+      - ${{ github.event.inputs.branch == 'dev' && 'dev' || 'prod' }} # Ensures it runs on the correct runner
+    if: contains(fromJson('["dev", "main"]'), github.event.inputs.branch) # More reliable branch check
     environment:
-      name: production
-      url: http://moodle-lb-244874513.us-east-2.elb.amazonaws.com
+     name: ${{ github.event.inputs.branch == 'main' && 'production' || 'development' }}
+     url: ${{ github.event.inputs.branch == 'main' && 'http://moodle-lb-244874513.us-east-2.elb.amazonaws.com' || 'http://moodle-dev-lb-244874513.us-east-2.elb.amazonaws.com' }}
+
     steps:
-      # Step 1: Download the previously uploaded artifact
       - name: Download artifact
         uses: actions/download-artifact@v4
         with:
-          name: plugin-package
+          name: plugin-package-${{ github.event.inputs.branch }}
+          path: /tmp
 
-      # Step 2: Compare version numbers between the artifact and the server
+      - name: Determine Moodle Root Path
+        id: determine-path
+        run: |
+          case "${{ github.event.inputs.branch }}" in
+            dev)  MOODLE_PATH=${{ env.DEV_MOODLE_ROOT }} ;;
+            main) MOODLE_PATH=${{ env.PROD_MOODLE_ROOT }} ;;
+          esac
+          echo "MOODLE_PATH=$MOODLE_PATH" >> $GITHUB_ENV
+
       - name: Compare version numbers
         run: |
-          # Create a unique temporary directory in /tmp
           TEMP_ARTIFACT_DIR="/tmp/temp_artifact_${{ needs.package-plugin.outputs.timestamp }}"
-          mkdir "$TEMP_ARTIFACT_DIR"
+          mkdir -p "$TEMP_ARTIFACT_DIR"
 
-          # Unzip the artifact into the temporary directory
-          unzip -q ${{ needs.package-plugin.outputs.zip-file }} -d "$TEMP_ARTIFACT_DIR"
+          unzip -q "/tmp/${{ needs.package-plugin.outputs.zip-file }}" -d "$TEMP_ARTIFACT_DIR"
 
-          # Define file paths for the artifact and server version files
-          artifact_file="${TEMP_ARTIFACT_DIR}/${{ github.event.inputs.plugin-directory }}/version.php"
-          server_file="${{ env.PROD_MOODLE_ROOT }}/mod/${{ github.event.inputs.plugin-directory }}/version.php"
+          artifact_file="$TEMP_ARTIFACT_DIR/${{ github.event.inputs.plugin-directory }}/version.php"
+          server_file="${{ env.MOODLE_PATH }}/mod/${{ github.event.inputs.plugin-directory }}/version.php"
 
-          # Ensure the artifact version file exists
           if [ ! -f "$artifact_file" ]; then
-            echo "::error:: Artifact version file not found: $artifact_file"
+            echo "::error:: Artifact version file not found!"
             exit 1
           fi
 
-          # Extract the artifact version
           ver_artifact=$(grep '\$plugin->version' "$artifact_file" | awk -F'=' '{print $2}' | tr -d " ;")
           echo "Artifact version: $ver_artifact"
 
-          # Check if the server version file exists and extract its version
-          if [ ! -f "$server_file" ]; then
-            echo "Server version file not found, assuming first deployment. Proceeding."
-          else
+          if [ -f "$server_file" ]; then
             ver_server=$(grep '\$plugin->version' "$server_file" | awk -F'=' '{print $2}' | tr -d " ;")
             echo "Server version: $ver_server"
-
-            # Compare the versions numerically
+            
             if [ "$ver_server" -gt "$ver_artifact" ]; then
               echo "::error:: Server version ($ver_server) is greater than artifact version ($ver_artifact). Deployment aborted."
               exit 1
-            elif [ "$ver_server" -lt "$ver_artifact" ]; then
-              echo "Artifact version ($ver_artifact) is greater. Proceeding with deployment."
-            else
-              echo "Both versions are the same ($ver_artifact). Proceeding with deployment."
             fi
+          else
+            echo "Server version file not found, proceeding."
           fi
 
-          # Remove the temporary directory
           rm -rf "$TEMP_ARTIFACT_DIR"
 
-      # Step 3: Backup the current plugin directory on the server
       - name: Backup current plugin directory
         run: |
           TIMESTAMP=$(date +'%Y%m%d-%H%M%S')
-          PLUGIN_DIR="${{ env.PROD_MOODLE_ROOT }}/mod/${{ github.event.inputs.plugin-directory }}"
+          PLUGIN_DIR="${{ env.MOODLE_PATH }}/mod/${{ github.event.inputs.plugin-directory }}"
+          BACKUP_FILE="/tmp/${{ github.event.inputs.plugin-directory }}-backup-${TIMESTAMP}.zip"
+
           if [ -d "$PLUGIN_DIR" ]; then
-            sudo cp -R "$PLUGIN_DIR" "/tmp/${{ github.event.inputs.plugin-directory }}-backup-${TIMESTAMP}"
-            echo "Backup of plugin directory created at /tmp/${{ github.event.inputs.plugin-directory }}-backup-${TIMESTAMP}"
+            sudo zip -r "$BACKUP_FILE" "$PLUGIN_DIR"
+            echo "Backup created at $BACKUP_FILE"
           else
-            echo "Plugin directory not found on server, skipping backup."
+            echo "No existing plugin directory found, skipping backup."
           fi
 
-      # Step 4: Deploy the plugin to the Moodle production environment
+
       - name: Deploy to Moodle
         run: |
-          DEPLOY_DIR="${{ env.PROD_MOODLE_ROOT }}/mod"
-          sudo unzip -qo ${{ needs.package-plugin.outputs.zip-file }} -d "$DEPLOY_DIR"
+          DEPLOY_DIR="${{ env.MOODLE_PATH }}/mod"
+          sudo unzip -qo "/tmp/${{ needs.package-plugin.outputs.zip-file }}" -d "$DEPLOY_DIR"
           sudo chown -R www-data:www-data "$DEPLOY_DIR/${{ github.event.inputs.plugin-directory }}"
-          echo "Deployed ${{ github.event.inputs.plugin-directory }} to Production"
