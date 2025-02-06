@@ -126,12 +126,19 @@ jobs:
         run: |
           TIMESTAMP=$(date +'%Y%m%d-%H%M%S')
           PLUGIN_DIR="${{ env.MOODLE_PATH }}/mod/${{ github.event.inputs.plugin-directory }}"
+          BACKUP_FILE="/tmp/${{ github.event.inputs.plugin-directory }}-backup-${TIMESTAMP}.zip"
+
           if [ -d "$PLUGIN_DIR" ]; then
-            sudo cp -R "$PLUGIN_DIR" "/tmp/${{ github.event.inputs.plugin-directory }}-backup-${TIMESTAMP}"
+            sudo zip -r "$BACKUP_FILE" "$PLUGIN_DIR"
+            echo "Backup created at $BACKUP_FILE"
+          else
+            echo "No existing plugin directory found, skipping backup."
           fi
 
       - name: Deploy to Moodle
         run: |
           DEPLOY_DIR="${{ env.MOODLE_PATH }}/mod"
           sudo unzip -qo "/tmp/${{ needs.package-plugin.outputs.zip-file }}" -d "$DEPLOY_DIR"
+
           sudo chown -R www-data:www-data "$DEPLOY_DIR/${{ github.event.inputs.plugin-directory }}"
+
