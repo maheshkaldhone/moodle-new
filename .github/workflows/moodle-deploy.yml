@@ -68,10 +68,11 @@ jobs:
       - self-hosted
       - Linux
       - X64
-    if: github.event.inputs.branch == 'dev' || github.event.inputs.branch == 'main'
+      - ${{ github.event.inputs.branch == 'dev' && 'dev' || 'prod' }} # Ensures it runs on the correct runner
+    if: contains(fromJson('["dev", "main"]'), github.event.inputs.branch) # More reliable branch check
     environment:
-      name: ${{ github.event.inputs.branch == 'main' && 'production' || 'development' }}
-      url: ${{ github.event.inputs.branch == 'main' && 'http://moodle-lb-244874513.us-east-2.elb.amazonaws.com' || 'http://moodle-dev-lb-244874513.us-east-2.elb.amazonaws.com' }}
+     name: ${{ github.event.inputs.branch == 'main' && 'production' || 'development' }}
+     url: ${{ github.event.inputs.branch == 'main' && 'http://moodle-lb-244874513.us-east-2.elb.amazonaws.com' || 'http://moodle-dev-lb-244874513.us-east-2.elb.amazonaws.com' }}
 
     steps:
       - name: Download artifact
