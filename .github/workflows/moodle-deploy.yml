@@ -1,12 +1,12 @@
 # Name of the workflow
-name: Manual Moodle Deployment
+name: Mannual Plugin Deployment
 
 # Trigger the workflow manually with required inputs
 on:
   workflow_dispatch:
     inputs:
       branch:
-        description: 'Select deployment branch'
+        description: 'Select branch to deploy'
         required: true
         type: choice
         options:
