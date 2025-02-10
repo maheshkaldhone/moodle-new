@@ -1,93 +1,152 @@
-name: Auto Plugin Deployment
+name: Manual Plugin Deployment
 
 on:
-  push:
-    branches:
-      - main
-      - dev
-    paths:
-      - 'mod/**'  
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Select branch to deploy'
+        required: true
+        type: choice
+        options:
+          - main
+          - dev
+      plugin-directory:
+        description: 'Plugin directory under mod/'
+        required: true
+        type: string
 
 env:
   PROD_MOODLE_ROOT: /var/www/html/moodle
   DEV_MOODLE_ROOT: /var/www/html/moodle
 
 jobs:
-  detect-changes:
-    name: Detect Changed Plugins
+  package-plugin:
+    name: Package Plugin
     runs-on: ubuntu-latest
     outputs:
-      changed_plugins: ${{ steps.filter.outputs.plugins }}
+      zip-file: ${{ steps.zip.outputs.zip-file }}
+      timestamp: ${{ steps.timestamp.outputs.time }}
 
     steps:
-      - name: Checkout Code
+      - name: Checkout selected branch
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch }}
 
-      - name: Detect Modified Plugin Directories
+      - name: Filter changed paths
         id: filter
         uses: dorny/paths-filter@v3
         with:
           filters: |
-            plugins:
-              - 'mod/*/'  # Detect changes in any plugin directory under mod/
+            plugin-directory:
+              - 'mod/${{ github.event.inputs.plugin-directory }}/**'
 
-      - name: Show Changed Plugins
-        run: echo "Changed Plugins: ${{ steps.filter.outputs.plugins }}"
+      - name: Exit if no changes in plugin directory
+        if: ${{ steps.filter.outputs.plugin-directory == '' }}
+        run: |
+          echo "No changes in plugin directory. Skipping deployment."
+          exit 0
 
-  package-plugin:
-    name: Package and Deploy Plugin
-    needs: detect-changes
-    runs-on: ubuntu-latest
-    if: needs.detect-changes.outputs.changed_plugins != '[]' # Proceed only if there are changes
-    strategy:
-      matrix:
-        plugin: ${{ fromJson(needs.detect-changes.outputs.changed_plugins) }}
+      - name: Validate plugin directory
+        run: |
+          PLUGIN_PATH="mod/${{ github.event.inputs.plugin-directory }}"
+          if [ ! -d "$PLUGIN_PATH" ]; then
+            echo "::error:: Plugin directory '$PLUGIN_PATH' not found in ${{ github.event.inputs.branch }} branch!"
+            exit 1
+          fi
 
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
+      - name: Generate timestamp
+        id: timestamp
+        run: echo "time=$(date +'%Y%m%d-%H%M%S')" >> $GITHUB_OUTPUT
 
       - name: Create deployment package
         id: zip
         run: |
-          TIMESTAMP=$(date +'%Y%m%d-%H%M%S')
-          ZIP_FILE="${{ github.ref_name }}-${{ matrix.plugin }}-${TIMESTAMP}.zip"
+          ZIP_FILE="${{ github.event.inputs.branch }}-${{ github.event.inputs.plugin-directory }}-${{ steps.timestamp.outputs.time }}.zip"
           cd mod
-          zip -qr "../$ZIP_FILE" "${{ matrix.plugin }}"
-          echo "zip-file=$ZIP_FILE" >> $GITHUB_ENV
+          zip -qr "../$ZIP_FILE" "${{ github.event.inputs.plugin-directory }}"
+          echo "zip-file=$ZIP_FILE" >> $GITHUB_OUTPUT
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: plugin-package-${{ matrix.plugin }}
-          path: ${{ env.zip-file }}
+          name: plugin-package-${{ github.event.inputs.branch }}
+          path: ${{ steps.zip.outputs.zip-file }}
           retention-days: 5
 
   deploy:
-    name: Deploy Plugin
+    name: Deploy to Instance
     needs: package-plugin
-    runs-on: 
-      - self-hosted
-      - Linux
-      - X64
-      - ${{ github.ref_name == 'dev' && 'dev' || 'prod' }} 
+    runs-on: ${{ github.event.inputs.branch == 'dev' && 'self-hosted' || 'self-hosted' }}  # Ensures it runs on the correct runner
+    if: contains(fromJson('["dev", "main"]'), github.event.inputs.branch) # More reliable branch check
     environment:
-      name: ${{ github.ref_name == 'main' && 'production' || 'development' }}
-      url: ${{ github.ref_name == 'main' && 'http://moodle-lb-244874513.us-east-2.elb.amazonaws.com' || 'http://moodle-dev-lb-244874513.us-east-2.elb.amazonaws.com' }}
-
-    strategy:
-      matrix:
-        plugin: ${{ fromJson(needs.detect-changes.outputs.changed_plugins) }}
+     name: ${{ github.event.inputs.branch == 'main' && 'production' || 'development' }}
+     url: ${{ github.event.inputs.branch == 'main' && 'http://moodle-lb-244874513.us-east-2.elb.amazonaws.com' || 'http://moodle-dev-lb-244874513.us-east-2.elb.amazonaws.com' }}
 
     steps:
       - name: Download artifact
         uses: actions/download-artifact@v4
         with:
-          name: plugin-package-${{ matrix.plugin }}
+          name: plugin-package-${{ github.event.inputs.branch }}
           path: /tmp
 
-      - name: Deploy Plugin
+      - name: Determine Moodle Root Path
+        id: determine-path
         run: |
-          DEPLOY_DIR="${{ github.ref_name == 'main' && env.PROD_MOODLE_ROOT || env.DEV_MOODLE_ROOT }}/mod"
-          sudo unzip -qo "/tmp/${{ env.zip-file }}" -d "$DEPLOY_DIR"
-          sudo chown -R www-data:www-data "$DEPLOY_DIR/${{ matrix.plugin }}"
+          case "${{ github.event.inputs.branch }}" in
+            dev)  MOODLE_PATH=${{ env.DEV_MOODLE_ROOT }} ;;
+            main) MOODLE_PATH=${{ env.PROD_MOODLE_ROOT }} ;;
+          esac
+          echo "MOODLE_PATH=$MOODLE_PATH" >> $GITHUB_ENV
+
+      - name: Compare version numbers
+        run: |
+          TEMP_ARTIFACT_DIR="/tmp/temp_artifact_${{ needs.package-plugin.outputs.timestamp }}"
+          mkdir -p "$TEMP_ARTIFACT_DIR"
+
+          unzip -q "/tmp/${{ needs.package-plugin.outputs.zip-file }}" -d "$TEMP_ARTIFACT_DIR"
+
+          artifact_file="$TEMP_ARTIFACT_DIR/${{ github.event.inputs.plugin-directory }}/version.php"
+          server_file="${{ env.MOODLE_PATH }}/mod/${{ github.event.inputs.plugin-directory }}/version.php"
+
+          if [ ! -f "$artifact_file" ]; then
+            echo "::error:: Artifact version file not found!"
+            exit 1
+          fi
+
+          ver_artifact=$(grep '\$plugin->version' "$artifact_file" | awk -F'=' '{print $2}' | tr -d " ;")
+          echo "Artifact version: $ver_artifact"
+
+          if [ -f "$server_file" ]; then
+            ver_server=$(grep '\$plugin->version' "$server_file" | awk -F'=' '{print $2}' | tr -d " ;")
+            echo "Server version: $ver_server"
+
+            if [ "$ver_server" -gt "$ver_artifact" ]; then
+              echo "::error:: Server version ($ver_server) is greater than artifact version ($ver_artifact). Deployment aborted."
+              exit 1
+            fi
+          else
+            echo "Server version file not found, proceeding."
+          fi
+
+          rm -rf "$TEMP_ARTIFACT_DIR"
+
+      - name: Backup current plugin directory
+        run: |
+          TIMESTAMP=$(date +'%Y%m%d-%H%M%S')
+          PLUGIN_DIR="${{ env.MOODLE_PATH }}/mod/${{ github.event.inputs.plugin-directory }}"
+          BACKUP_FILE="/tmp/${{ github.event.inputs.plugin-directory }}-backup-${TIMESTAMP}.zip"
+
+          if [ -d "$PLUGIN_DIR" ]; then
+            sudo zip -r "$BACKUP_FILE" "$PLUGIN_DIR"
+            echo "Backup created at $BACKUP_FILE"
+          else
+            echo "No existing plugin directory found, skipping backup."
+          fi
+
+      - name: Deploy to Moodle
+        run: |
+          DEPLOY_DIR="${{ env.MOODLE_PATH }}/mod"
+          sudo unzip -qo "/tmp/${{ needs.package-plugin.outputs.zip-file }}" -d "$DEPLOY_DIR"
+
+          sudo chown -R www-data:www-data "$DEPLOY_DIR/${{ github.event.inputs.plugin-directory }}"
