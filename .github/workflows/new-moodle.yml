@@ -1,0 +1,93 @@
+name: Auto Plugin Deployment
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+    paths:
+      - 'mod/**'  
+
+env:
+  PROD_MOODLE_ROOT: /var/www/html/moodle
+  DEV_MOODLE_ROOT: /var/www/html/moodle
+
+jobs:
+  detect-changes:
+    name: Detect Changed Plugins
+    runs-on: ubuntu-latest
+    outputs:
+      changed_plugins: ${{ steps.filter.outputs.plugins }}
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Detect Modified Plugin Directories
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            plugins:
+              - 'mod/*/'  # Detect changes in any plugin directory under mod/
+
+      - name: Show Changed Plugins
+        run: echo "Changed Plugins: ${{ steps.filter.outputs.plugins }}"
+
+  package-plugin:
+    name: Package and Deploy Plugin
+    needs: detect-changes
+    runs-on: ubuntu-latest
+    if: needs.detect-changes.outputs.changed_plugins != '[]' # Proceed only if there are changes
+    strategy:
+      matrix:
+        plugin: ${{ fromJson(needs.detect-changes.outputs.changed_plugins) }}
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Create deployment package
+        id: zip
+        run: |
+          TIMESTAMP=$(date +'%Y%m%d-%H%M%S')
+          ZIP_FILE="${{ github.ref_name }}-${{ matrix.plugin }}-${TIMESTAMP}.zip"
+          cd mod
+          zip -qr "../$ZIP_FILE" "${{ matrix.plugin }}"
+          echo "zip-file=$ZIP_FILE" >> $GITHUB_ENV
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: plugin-package-${{ matrix.plugin }}
+          path: ${{ env.zip-file }}
+          retention-days: 5
+
+  deploy:
+    name: Deploy Plugin
+    needs: package-plugin
+    runs-on: 
+      - self-hosted
+      - Linux
+      - X64
+      - ${{ github.ref_name == 'dev' && 'dev' || 'prod' }} 
+    environment:
+      name: ${{ github.ref_name == 'main' && 'production' || 'development' }}
+      url: ${{ github.ref_name == 'main' && 'http://moodle-lb-244874513.us-east-2.elb.amazonaws.com' || 'http://moodle-dev-lb-244874513.us-east-2.elb.amazonaws.com' }}
+
+    strategy:
+      matrix:
+        plugin: ${{ fromJson(needs.detect-changes.outputs.changed_plugins) }}
+
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: plugin-package-${{ matrix.plugin }}
+          path: /tmp
+
+      - name: Deploy Plugin
+        run: |
+          DEPLOY_DIR="${{ github.ref_name == 'main' && env.PROD_MOODLE_ROOT || env.DEV_MOODLE_ROOT }}/mod"
+          sudo unzip -qo "/tmp/${{ env.zip-file }}" -d "$DEPLOY_DIR"
+          sudo chown -R www-data:www-data "$DEPLOY_DIR/${{ matrix.plugin }}"
